@@ -141,5 +141,71 @@ document.querySelectorAll("[data-print]").forEach(b=>b.onclick=()=>{
 });
 
 $("lang").onclick=()=>alert("واجهة الألعاب العربية مفعّلة بالكامل.");
+
+const BUCKET="space-participations";
+let adminMode=false;
+// This is a lightweight UI gate, not strong authentication.
+// Database DELETE policies still determine whether deletion is allowed.
+const ADMIN_CODE="2026";
+
+async function loadWorks(){
+ if(!db){$("worksGallery").innerHTML="<p>تعذر الاتصال بالمعرض.</p>";return}
+ try{
+  const {data,error}=await db.from("space_gallery").select("*").order("created_at",{ascending:false});
+  if(error)throw error;
+  $("galleryCount").textContent=ar(data.length);
+  $("worksGallery").innerHTML=data.length?data.map(x=>`<article class="workCard" data-id="${x.id}" data-url="${esc(x.image_url)}"><button class="deleteWork" title="حذف">🗑️</button><img src="${esc(x.image_url)}" loading="lazy" alt="عمل ${esc(x.name)}"><div class="workMeta"><b>${esc(x.name)}</b><small>${esc(x.grade)} • ${esc(x.activity)}</small></div></article>`).join(""):"<p>بانتظار أول عمل في المعرض 🚀</p>";
+  $("worksGallery").classList.toggle("adminMode",adminMode);
+ }catch(e){console.warn(e);$("worksGallery").innerHTML="<p>تعذر تحميل المعرض حاليًا.</p>"}
+}
+
+$("galleryUpload").onclick=async()=>{
+ let name=$("galleryName").value.trim(),grade=$("galleryGrade").value,activity=$("galleryActivity").value,file=$("galleryFile").files[0];
+ if(!name||!grade||!activity||!file){$("galleryStatus").textContent="أكملي الاسم والصف ونوع العمل واختاري الصورة.";return}
+ if(!file.type.startsWith("image/")){$("galleryStatus").textContent="اختاري ملف صورة فقط.";return}
+ if(file.size>5*1024*1024){$("galleryStatus").textContent="حجم الصورة كبير؛ الحد الأقصى ٥ ميجابايت.";return}
+ $("galleryUpload").disabled=true;$("galleryStatus").textContent="جارٍ رفع العمل…";
+ try{
+  const ext=(file.name.split(".").pop()||"jpg").replace(/[^a-zA-Z0-9]/g,"");
+  const path=`gallery/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+  const up=await db.storage.from(BUCKET).upload(path,file,{cacheControl:"3600",upsert:false});
+  if(up.error)throw up.error;
+  const pub=db.storage.from(BUCKET).getPublicUrl(path).data.publicUrl;
+  const ins=await db.from("space_gallery").insert({participant_id:current?.id||null,name,grade,activity,image_url:pub});
+  if(ins.error){await db.storage.from(BUCKET).remove([path]);throw ins.error}
+  $("galleryStatus").textContent="✓ أضيف العمل إلى معرض رواد الفضاء.";
+  $("galleryFile").value="";await loadWorks();
+ }catch(e){console.error(e);$("galleryStatus").textContent="تعذر رفع العمل. تحققي من اتصال Supabase وسياسات التخزين."}
+ finally{$("galleryUpload").disabled=false}
+};
+
+$("adminToggle").onclick=()=>{
+ if(adminMode){adminMode=false;$("adminState").textContent="";$("worksGallery").classList.remove("adminMode");return}
+ const code=prompt("أدخلي رمز إدارة المعرض:");
+ if(code===ADMIN_CODE){adminMode=true;$("adminState").textContent="وضع الإدارة مفعّل";$("worksGallery").classList.add("adminMode")}else if(code!==null){alert("رمز الإدارة غير صحيح.")}
+};
+
+$("worksGallery").onclick=async e=>{
+ const btn=e.target.closest(".deleteWork");if(!btn||!adminMode)return;
+ const card=btn.closest(".workCard"),id=card.dataset.id,url=card.dataset.url;
+ const nm=card.querySelector(".workMeta b")?.textContent||"هذه المشاركة";
+ if(!confirm(`هل تريدين حذف مشاركة ${nm}؟`))return;
+ btn.disabled=true;
+ try{
+  const del=await db.from("space_gallery").delete().eq("id",id);
+  if(del.error)throw del.error;
+  // Best effort: remove the storage object too.
+  const token=`/${BUCKET}/`;
+  const idx=url.indexOf(token);
+  if(idx>=0){
+   const path=decodeURIComponent(url.slice(idx+token.length));
+   const rem=await db.storage.from(BUCKET).remove([path]);
+   if(rem.error)console.warn("Storage remove:",rem.error);
+  }
+  await loadWorks();
+ }catch(e){console.error(e);alert("تعذر الحذف. يلزم السماح بالحذف في سياسات Supabase للمشرفة.")}
+};
+
+loadWorks();
 loadUsers();
 })();
